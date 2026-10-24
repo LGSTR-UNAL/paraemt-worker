@@ -1,0 +1,11 @@
+{
+  "system": "ieee9",
+  "n": 4,
+  "seed": 1,
+  "method": "monte_carlo",
+  "fixed": {"t_end": 1.0},
+  "params": {
+    "gen_index": {"dist": "int_uniform", "low": 0, "high": 2},
+    "t_trip": {"dist": "uniform", "low": 0.2, "high": 0.5, "round": 3}
+  }
+}
