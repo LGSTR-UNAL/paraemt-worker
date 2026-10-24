@@ -50,6 +50,7 @@ RESULT_SCHEMA = {
 running = True
 plugin = ParaEmtPlugin()
 shared_cache: dict[Any, Any] = {}
+delivery_errors: list[str] = []
 
 
 def setting(name: str, default: str | None = None) -> str:
@@ -67,13 +68,26 @@ def stop(signum: int, _frame: Any) -> None:
 
 def publish(producer: Producer, topic: str, record: dict[str, Any]) -> None:
     body = json.dumps(record, default=str)
+
+    def delivery_report(error: Any, message: Any) -> None:
+        if error is not None:
+            delivery_errors.append(f"{message.topic()}: {error}")
+
     while True:
         try:
-            producer.produce(topic=topic, value=body)
+            producer.produce(topic=topic, value=body, on_delivery=delivery_report)
             break
         except BufferError:
             producer.poll(0.1)
     producer.poll(0)
+
+
+def flush(producer: Producer) -> None:
+    pending = producer.flush(float(os.getenv("PRODUCER_FLUSH_TIMEOUT", "60")))
+    errors = delivery_errors.copy()
+    delivery_errors.clear()
+    if pending or errors:
+        raise RuntimeError(f"Kafka delivery incomplete: {pending} pending; {'; '.join(errors[:5])}")
 
 
 def publish_status(producer: Producer, topic: str, request_id: str, status: str,
@@ -91,9 +105,7 @@ def publish_status(producer: Producer, topic: str, request_id: str, status: str,
         "metrics": json.dumps(metrics, default=str) if metrics else None,
     }
     publish(producer, topic, {"schema": STATUS_SCHEMA, "payload": payload})
-    pending = producer.flush(float(os.getenv("PRODUCER_FLUSH_TIMEOUT", "60")))
-    if pending:
-        raise RuntimeError(f"{pending} status messages remain undelivered")
+    flush(producer)
 
 
 def publish_results(producer: Producer, topic: str, request_id: str,
@@ -107,9 +119,7 @@ def publish_results(producer: Producer, topic: str, request_id: str,
             "value": float(result.value),
         }
         publish(producer, topic, {"schema": RESULT_SCHEMA, "payload": payload})
-    pending = producer.flush(float(os.getenv("PRODUCER_FLUSH_TIMEOUT", "60")))
-    if pending:
-        raise RuntimeError(f"{pending} result messages remain undelivered")
+    flush(producer)
 
 
 def process(value: Any, producer: Producer, s3: Any, results_topic: str,
@@ -149,6 +159,7 @@ def process(value: Any, producer: Producer, s3: Any, results_topic: str,
                            error=str(exc))
         except Exception:
             logging.exception("Could not publish failure status for %s", request_id)
+            raise
     finally:
         if "case_dir" in locals():
             shutil.rmtree(case_dir, ignore_errors=True)
