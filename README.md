@@ -18,15 +18,21 @@ ParaEMT request topic -> ShareConsumer -> ParaEMT -> result topic
 
 The worker accepts messages whose payload has a unique `id` and `plugin: "paraemt"` (the plugin
 field defaults to `paraemt`). Supported systems are `2gen`, `ieee9`, `ieee39`, `wecc179`,
-`wecc240`, and `2area`. Parameters include `gen_index`, `t_trip`, `t_end`, `ds_rate`, `dsp`,
-`t_step`, and `gen_step`. A case must include a generator trip (`t_trip`) or a reference step
-(`dsp`). See [`examples/`](examples/) and the upstream ParaEMT model documentation for model
-details.
+`wecc240`, and `2area`. The included campaign uses the IEEE 39 bus system and samples paired
+events: one generator trip and one governor reference step. It selects the tripped machine
+uniformly from ten generators and the stepped machine uniformly from the other nine, samples trip
+time from 0.3 to 1.0 s, step time from 0.3 to 1.5 s, and step magnitude from −0.15 to +0.15 pu.
+Its 10 s horizon captures either event ordering. The fixed seed and exact specification are in
+[`examples/campaign_ieee39.json`](examples/campaign_ieee39.json).
+
+Parameters include `gen_index`, `t_trip`, `t_end`, `ds_rate`, `dsp`, `t_step`, and `gen_step`. A
+case must include a generator trip (`t_trip`) or a reference step (`dsp`).
 
 The first worker for a system creates a shared steady state snapshot and uploads it to the
 resources bucket. Subsequent tasks reuse the local snapshot or download it from object storage.
 Each simulation gets a fresh working directory. On completion, the worker publishes one result
-record per scalar or per bus measurement. On failure, it attempts to save the solver output log
+record per scalar or per bus measurement. RoCoF is omitted because the current extraction method
+does not estimate it reliably. On failure, it attempts to save the solver output log
 in the results bucket.
 
 ## Message contracts
@@ -34,8 +40,8 @@ in the results bucket.
 Request values are Kafka Connect JSON envelopes, as produced by `paraemt-http-server`:
 
 ```json
-{"payload":{"id":"uuid","fecha":1761300000000,"plugin":"paraemt","system":"ieee9",
- "gen_index":0,"t_trip":0.2,"t_end":1.0,"ds_rate":10}}
+{"payload":{"id":"uuid","fecha":1761300000000,"plugin":"paraemt","system":"ieee39",
+ "gen_index":0,"gen_step":1,"t_trip":0.4,"t_step":0.9,"dsp":0.05,"t_end":10.0}}
 ```
 
 Result messages use `simulation_id`, `fecha`, `t`, `measurement`, and `value`. Status messages use

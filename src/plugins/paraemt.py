@@ -5,7 +5,7 @@
                      and uploaded otherwise
     run_case         per-case copy of ParaEMT's main_step1_simulation.py with the constants replaced,
                      run from the snapshot in an isolated working directory
-    extract_results  summary of the saved bus quantities: frequency nadir, RoCoF, voltage extremes,
+    extract_results  summary of the saved bus quantities: frequency nadir, voltage extremes,
                      and the minimum voltage of every bus
 
 ParaEMT is driven by editing constants in its script, so it is not modified: this plugin writes a
@@ -32,7 +32,7 @@ SYSTEMS = {"2gen": 1, "ieee9": 2, "ieee39": 3, "wecc179": 4, "wecc240": 5, "2are
 TS = 50e-6  # ParaEMT time step, seconds; part of the snapshot file name
 SNAPSHOT_TLEN = 1.0  # seconds of steady state simulated to build the snapshot
 DEFAULTS: dict[str, Any] = dict(
-    system="ieee9", gen_index=0, t_trip=0.2, t_end=1.0, ds_rate=10,
+    system="ieee39", gen_index=0, t_trip=0.2, t_end=10.0, ds_rate=10,
     dsp=None, t_step=None, reinit=None, gen_step=None,
 )
 SNAPSHOT_BUCKET = os.getenv("S3_RESOURCES_BUCKET", "hydraflowsim-resources")
@@ -46,7 +46,6 @@ SCALAR_METRICS = {
     "freq_dev_max": None,
     "freq_final_mean": None,
     "f_nadir_mean": "t_nadir",
-    "rocof_max_pu_s": None,
 }
 
 
@@ -91,6 +90,16 @@ def prepare_case(request: dict[str, Any]) -> dict[str, Any]:
         raise InvalidRequest("t_trip must be < t_end")
     if p["dsp"] is not None and p["t_step"] >= p["t_end"]:
         raise InvalidRequest("t_step must be < t_end")
+    if p["t_end"] <= 0 or p["ds_rate"] <= 0:
+        raise InvalidRequest("t_end and ds_rate must be positive")
+    if p["system"] == "ieee39":
+        if not 0 <= p["gen_index"] < 10:
+            raise InvalidRequest("IEEE 39 gen_index must identify one of its ten generators (0 to 9)")
+        if p["gen_step"] is not None:
+            if not 0 <= p["gen_step"] < 10:
+                raise InvalidRequest("IEEE 39 gen_step must identify one of its ten generators (0 to 9)")
+            if p["gen_step"] == p["gen_index"]:
+                raise InvalidRequest("IEEE 39 gen_step must differ from gen_index")
     if p["t_trip"] is None and p["dsp"] is None:
         raise InvalidRequest("The case needs a disturbance: t_trip or dsp")
     return p
@@ -311,8 +320,6 @@ out = {"n_saved": int(xb.shape[1]), "t_end": float(emt.t[-1]),
        "freq_final_mean": float(we[:, -1].mean()), "n_bus": nb}
 tw = t[m]; fm = we.mean(axis=0)                  # mean bus frequency (pu of nominal)
 out["t_nadir"] = float(tw[np.argmin(fm)]); out["f_nadir_mean"] = float(fm.min() - 1.0)
-w = (tw >= tw[0]) & (tw <= tw[0] + 0.5)
-out["rocof_max_pu_s"] = float(np.abs(np.gradient(fm[w], tw[w])).max()) if w.sum() > 3 else None
 print(json.dumps(out))
 '''
 
@@ -322,9 +329,9 @@ def _summarise(workdir: Path, p: dict[str, Any]) -> dict[str, Any]:
     res = workdir / f"sim_res_S{n}_{int(TS * 1e6)}u.pkl"
     if not res.exists():
         raise RuntimeError(f"ParaEMT left no result file {res.name}")
-    # The analysed window starts at the trip, as in the prototype campaign; a case with only a
-    # governor step starts it at the step.
-    t_first = p["t_trip"] if p["t_trip"] is not None else p["t_step"]
+    # Include the response to whichever of the sampled disturbances occurs first.
+    disturbances = [t for t in (p["t_trip"], p["t_step"]) if t is not None]
+    t_first = min(disturbances)
     cp = subprocess.run(
         [paraemt_python(), "-c", _EXTRACT, str(res), str(t_first)],
         cwd=workdir, env=_env(), capture_output=True, text=True, timeout=_timeout(),
